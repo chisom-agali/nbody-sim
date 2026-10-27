@@ -1,0 +1,334 @@
+"""
+Base challenge: model gravitational interactions between a few bodies as a
+system of ODEs, integrate numerically, visualize in 3D, and export a video.
+
+Extra credit: same approach applied to a spacecraft in the Earth-Moon
+circular restricted three-body problem (CR3BP), rotating frame.
+
+Run this file directly (python n_body_challenge.py) and it produces:
+    nbody_static_check.png   - static 3D check plot, base challenge
+    nbody_simulation.mp4     - animated video, base challenge
+    cr3bp_static_check.png   - static 3D check plot, CR3BP
+    cr3bp_simulation.mp4     - animated video, CR3BP
+"""
+
+import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.animation import FuncAnimation
+from scipy.integrate import solve_ivp
+
+
+# =====================================================================
+# PART 1 - base challenge: N-body gravity
+# =====================================================================
+
+def total_accelerations(positions, masses, G=6.674e-11):
+    n = len(positions)
+    accel = np.zeros((n, 3))
+
+    for i in range(n):
+        for j in range(n):
+            if i == j:
+                continue
+
+            r_vec = positions[j] - positions[i]
+            r = np.linalg.norm(r_vec)
+
+            accel[i] += G * masses[j] * r_vec / r**3
+
+    return accel
+
+
+def n_body_deriv(t, y, masses, G=6.674e-11):
+    n = len(masses)
+
+    # positions first, then velocities
+    pos = y[:3 * n].reshape(n, 3)
+    vel = y[3 * n:].reshape(n, 3)
+
+    acc = total_accelerations(pos, masses, G)
+
+    return np.concatenate([
+        vel.ravel(),
+        acc.ravel()
+    ])
+
+
+def run_n_body():
+    # body masses
+    masses = np.array([
+        5e24,
+        7e22,
+        1e22
+    ])
+
+    # starting positions
+    pos0 = np.array([
+        [0, 0, 0],
+        [4e8, 0, 0],
+        [0, 6e8, 1e7]
+    ], dtype=float)
+
+    # starting velocities
+    vel0 = np.array([
+        [0, 0, 0],
+        [0, 1000, 0],
+        [-800, 0, 0]
+    ], dtype=float)
+
+    # all positions first, then all velocities
+    y0 = np.concatenate([
+        pos0.ravel(),
+        vel0.ravel()
+    ])
+
+    G = 6.674e-11
+    n = len(masses)
+
+    # T was originally 86400s (1 day), but at this mass/distance the
+    # orbital period is roughly 2.7e6 s (about a month), so 1 day only
+    # showed ~3% of one orbit. Stretch T out to a few periods so the
+    # orbits actually close.
+    r_12 = np.linalg.norm(pos0[1] - pos0[0])
+    v_circular = np.sqrt(G * masses[0] / r_12)
+    period_est = 2 * np.pi * r_12 / v_circular
+    T = 6 * period_est
+
+    n_frames = 300
+    t_eval = np.linspace(0, T, n_frames)
+
+    sol = solve_ivp(
+        n_body_deriv,
+        (0, T),
+        y0,
+        args=(masses, G),
+        t_eval=t_eval,
+        rtol=1e-9,
+        atol=1e-9
+    )
+
+    # sol.y shape: (6N, n_frames)
+    # transpose first, then split into time, body, xyz
+    positions_over_time = (
+        sol.y[:3 * n]
+        .T
+        .reshape(len(t_eval), n, 3)
+    )
+
+    final_pos = positions_over_time[-1]
+    print("[n-body] estimated orbital period (s):", period_est)
+    print("[n-body] simulated span (s):", T, "=", T / period_est, "orbits")
+    print("[n-body] final positions:\n", final_pos)
+
+    colors = plt.cm.tab10(np.arange(n) % 10)
+
+    # ---- static check plot ----
+    fig_static = plt.figure()
+    ax_static = fig_static.add_subplot(111, projection="3d")
+
+    for i in range(n):
+        ax_static.plot(
+            positions_over_time[:, i, 0],
+            positions_over_time[:, i, 1],
+            positions_over_time[:, i, 2],
+            color=colors[i],
+            label=f"Body {i + 1}"
+        )
+
+    ax_static.set_xlabel("x (m)")
+    ax_static.set_ylabel("y (m)")
+    ax_static.set_zlabel("z (m)")
+    ax_static.set_title("3-body paths (static check)")
+    ax_static.set_box_aspect((1, 1, 1))
+    ax_static.legend()
+    fig_static.savefig("nbody_static_check.png", dpi=150)
+    plt.close(fig_static)
+
+    # ---- animated video ----
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+
+    pad = 0.1
+    all_pts = positions_over_time.reshape(-1, 3)
+    mins = all_pts.min(axis=0)
+    maxs = all_pts.max(axis=0)
+    span = (maxs - mins).max() * (1 + pad)
+    mid = (maxs + mins) / 2
+    ax.set_xlim(mid[0] - span / 2, mid[0] + span / 2)
+    ax.set_ylim(mid[1] - span / 2, mid[1] + span / 2)
+    ax.set_zlim(mid[2] - span / 2, mid[2] + span / 2)
+    ax.set_xlabel("x (m)")
+    ax.set_ylabel("y (m)")
+    ax.set_zlabel("z (m)")
+    ax.set_title("N-body simulation")
+    ax.set_box_aspect((1, 1, 1))
+
+    lines = [ax.plot([], [], [], color=colors[i], label=f"Body {i + 1}")[0] for i in range(n)]
+    points = [ax.plot([], [], [], "o", color=colors[i])[0] for i in range(n)]
+    ax.legend()
+
+    def update(frame):
+        for i in range(n):
+            xs = positions_over_time[:frame + 1, i, 0]
+            ys = positions_over_time[:frame + 1, i, 1]
+            zs = positions_over_time[:frame + 1, i, 2]
+            lines[i].set_data(xs, ys)
+            lines[i].set_3d_properties(zs)
+            points[i].set_data(xs[-1:], ys[-1:])
+            points[i].set_3d_properties(zs[-1:])
+        return lines + points
+
+    anim = FuncAnimation(fig, update, frames=n_frames, interval=30, blit=False)
+    anim.save("nbody_simulation.mp4", writer="ffmpeg", fps=30)
+    plt.close(fig)
+
+    print("[n-body] wrote nbody_static_check.png and nbody_simulation.mp4")
+
+
+# =====================================================================
+# PART 2 - extra credit: Earth-Moon CR3BP
+# =====================================================================
+
+def cr3bp_deriv(t, state, mu=0.0123):
+    x, y, z, xdot, ydot, zdot = state
+
+    r1 = np.sqrt((x + mu)**2 + y**2 + z**2)
+    r2 = np.sqrt((x - 1 + mu)**2 + y**2 + z**2)
+
+    xddot = (
+        x
+        + 2 * ydot
+        - (1 - mu) * (x + mu) / r1**3
+        - mu * (x - 1 + mu) / r2**3
+    )
+
+    yddot = (
+        y
+        - 2 * xdot
+        - (1 - mu) * y / r1**3
+        - mu * y / r2**3
+    )
+
+    zddot = (
+        -(1 - mu) * z / r1**3
+        - mu * z / r2**3
+    )
+
+    return np.array([
+        xdot,
+        ydot,
+        zdot,
+        xddot,
+        yddot,
+        zddot
+    ])
+
+
+def run_cr3bp():
+    mu = 0.0123
+    state0 = np.array([0.8, 0, 0, 0, 0.2, 0])
+
+    # (0, 0.1) was only ~1.6% of one synodic period. In these
+    # nondimensional CR3BP units, the Earth-Moon system completes one
+    # full rotation in 2*pi time units, so give it several full periods.
+    period = 2 * np.pi
+    n_periods = 3
+    T = n_periods * period
+
+    n_frames = 400
+    t_eval = np.linspace(0, T, n_frames)
+
+    sol = solve_ivp(
+        cr3bp_deriv,
+        (0, T),
+        state0,
+        t_eval=t_eval,
+        rtol=1e-9,
+        atol=1e-9
+    )
+
+    positions_over_time = sol.y[:3].T  # (n_frames, 3): x, y, z
+
+    final_state = sol.y[:, -1]
+    print("[cr3bp] simulated span (nondim time):", T, "=", n_periods, "synodic periods")
+    print("[cr3bp] final state:", final_state)
+
+    earth = np.array([-mu, 0, 0])
+    moon = np.array([1 - mu, 0, 0])
+
+    # ---- static check plot ----
+    fig_static = plt.figure()
+    ax_static = fig_static.add_subplot(111, projection="3d")
+
+    ax_static.plot(
+        positions_over_time[:, 0],
+        positions_over_time[:, 1],
+        positions_over_time[:, 2],
+        color="tab:purple",
+        label="Spacecraft"
+    )
+    ax_static.scatter(*earth, color="tab:blue", s=60, label="Earth")
+    ax_static.scatter(*moon, color="gray", s=30, label="Moon")
+
+    ax_static.set_xlabel("x (nondim, rotating frame)")
+    ax_static.set_ylabel("y (nondim, rotating frame)")
+    ax_static.set_zlabel("z (nondim, rotating frame)")
+    ax_static.set_title("CR3BP trajectory (static check)")
+    ax_static.set_box_aspect((1, 1, 1))
+    ax_static.legend()
+    fig_static.savefig("cr3bp_static_check.png", dpi=150)
+    plt.close(fig_static)
+
+    # ---- animated video ----
+    fig = plt.figure()
+    ax = fig.add_subplot(111, projection="3d")
+
+    pad = 0.15
+    all_pts = np.vstack([positions_over_time, earth, moon])
+    mins = all_pts.min(axis=0)
+    maxs = all_pts.max(axis=0)
+    span = (maxs - mins).max() * (1 + pad)
+    mid = (maxs + mins) / 2
+    ax.set_xlim(mid[0] - span / 2, mid[0] + span / 2)
+    ax.set_ylim(mid[1] - span / 2, mid[1] + span / 2)
+    ax.set_zlim(mid[2] - span / 2, mid[2] + span / 2)
+    ax.set_xlabel("x (nondim)")
+    ax.set_ylabel("y (nondim)")
+    ax.set_zlabel("z (nondim)")
+    ax.set_title("CR3BP spacecraft trajectory (rotating frame)")
+    ax.set_box_aspect((1, 1, 1))
+
+    ax.scatter(*earth, color="tab:blue", s=60, label="Earth")
+    ax.scatter(*moon, color="gray", s=30, label="Moon")
+
+    line, = ax.plot([], [], [], color="tab:purple", label="Spacecraft")
+    point, = ax.plot([], [], [], "o", color="tab:purple")
+    ax.legend()
+
+    def update(frame):
+        xs = positions_over_time[:frame + 1, 0]
+        ys = positions_over_time[:frame + 1, 1]
+        zs = positions_over_time[:frame + 1, 2]
+        line.set_data(xs, ys)
+        line.set_3d_properties(zs)
+        point.set_data(xs[-1:], ys[-1:])
+        point.set_3d_properties(zs[-1:])
+        return line, point
+
+    anim = FuncAnimation(fig, update, frames=n_frames, interval=25, blit=False)
+    anim.save("cr3bp_simulation.mp4", writer="ffmpeg", fps=30)
+    plt.close(fig)
+
+    print("[cr3bp] wrote cr3bp_static_check.png and cr3bp_simulation.mp4")
+
+
+# =====================================================================
+# run both
+# =====================================================================
+
+if __name__ == "__main__":
+    print("=== Base challenge: N-body gravity ===")
+    run_n_body()
+    print()
+    print("=== Extra credit: Earth-Moon CR3BP ===")
+    run_cr3bp()
